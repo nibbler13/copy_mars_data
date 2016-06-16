@@ -33,10 +33,10 @@ Local $iniFile = @ScriptDir & "\copy_mars_data.ini"
 Local $generalSection = "general"
 Local $mailSection = "mail"
 
-Local $server_backup = "172.16.6.6"
-Local $login_backup = "copy_mars_data@nnkk.budzdorov.su"
-Local $password_backup = "teoxfcjz"
-Local $to_backup = "nn-admin@nnkk.budzdorov.su"
+Local $server_backup = ""
+Local $login_backup = ""
+Local $password_backup = ""
+Local $to_backup = ""
 Local $send_email_backup = "1"
 #EndRegion
 
