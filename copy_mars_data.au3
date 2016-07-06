@@ -1,8 +1,12 @@
-#pragma compile(ProductVersion, 0.1)
+#Region ;**** Directives created by AutoIt3Wrapper_GUI ****
+#AutoIt3Wrapper_Icon=icon.ico
+#EndRegion ;**** Directives created by AutoIt3Wrapper_GUI ****
+
+#pragma compile(ProductVersion, 0.71)
 #pragma compile(UPX, true)
 #pragma compile(CompanyName, 'ООО Клиника ЛМС')
 #pragma compile(FileDescription, Скрипт для копирования файлов Mars с суточными экг мониторами)
-#pragma compile(LegalCopyright, Грашкин Павел Павлович - Нижний Новгород - 31-555 - nn-admin@nnkk.budzdorov.su)
+#pragma compile(LegalCopyright, Грашкин Павел Павлович - Нижний Новгород - 31-555)
 #pragma compile(ProductName, copy_mars_data)
 
 AutoItSetOption("TrayAutoPause", 0)
@@ -11,26 +15,25 @@ AutoItSetOption("TrayIconDebug", 1)
 #include <File.au3>
 #include <FileConstants.au3>
 #include <Date.au3>
+#include <Crypt.au3>
+#include <String.au3>
 
-#Region ==========================    Check for temp folder and create log    ==========================
+#Region ==========================    Variables    ==========================
 Local $oMyError = ObjEvent("AutoIt.Error","HandleComError")
 Local $messageToSend = ""
 Local $current_pc_name = @ComputerName
-Local $tempFolder = StringSplit(@SystemDir, "\")[1] & "\Temp\"
 Local $errStr = "===ERROR=== "
 ConsoleWrite("Current_pc_name: " & $current_pc_name & @CRLF)
 
-Local $logFilePath = @ScriptDir & "\copy_mars_data.log"
-Local $logFile = FileOpen($logFilePath, $FO_OVERWRITE)
+Local $logFilePath = @ScriptDir & "\" & @ScriptName & "_" & @YEAR & @MON & @MDAY & ".log"
+If FileExists($logFilePath) Then FileDelete($logFilePath)
+Local $historyFileName = "Журнал добавления исследований MARS.txt"
+Local $historyFilePath = @ScriptDir & "\" & $historyFileName
 ToLog($current_pc_name)
-ToLog(@CRLF & "---Check for temp folder and create log---")
 
-If $logFile = -1 Then ToLog($errStr & "Cannot create log file at " & $tempFolder)
-#EndRegion
-
-#Region ==========================    Variables    ==========================
 Local $iniFile = @ScriptDir & "\copy_mars_data.ini"
 Local $generalSection = "general"
+Local $sourcesSection = "sources"
 Local $mailSection = "mail"
 
 Local $server_backup = ""
@@ -38,10 +41,6 @@ Local $login_backup = ""
 Local $password_backup = ""
 Local $to_backup = ""
 Local $send_email_backup = "1"
-#EndRegion
-
-#Region ==========================    Reading the main settings    ==========================
-ToLog(@CRLF & "---Reading the main settings---")
 
 Local $server = IniRead($iniFile, $mailSection, "server", $server_backup)
 Local $login = IniRead($iniFile, $mailSection, "login", $login_backup)
@@ -61,22 +60,18 @@ ToLog("login: " & $login)
 ToLog("to: " & $to)
 ToLog("send_mail: " & $send_email)
 
-Local $source = IniRead($iniFile, $generalSection, "source", "")
+Local $source = IniReadSection($iniFile, $sourcesSection)
 Local $destination = IniRead($iniFile, $generalSection, "destination", "")
-Local $destinationArchive = IniRead($iniFile, $generalSection, "destinationArchive", "")
-Local $filesLimit = IniRead($iniFile, $generalSection, "filesLimit", "")
-Local $moveIntoTheArchiveOlderThanDays = IniRead($iniFile, $generalSection, "moveIntoTheArchiveOlderThanDays", "")
 Local $delaySeconds = IniRead($iniFile, $generalSection, "delaySeconds", "")
 Local $mask = IniRead($iniFile, $generalSection, "mask", "")
+
+Local $destinationHashKeys
 #EndRegion
 
 #Region ==========================    Check for the settings error    ==========================
-ToLog(@CRLF & "---Check for the settings error---")
-If $source = "" Then ToLog($errStr & "Cannot find key: source")
+ToLog(@CRLF & "---Check for settings errors---")
+If Not IsArray($source) Then ToLog($errStr & "Cannot find section: sources")
 If $destination = "" Then ToLog($errStr & "Cannot find key: destination")
-If $destinationArchive = "" Then ToLog($errStr & "Cannot find key: destinationArchive")
-If $filesLimit = "" Then ToLog($errStr & "Cannot find key: filesLimit")
-If $moveIntoTheArchiveOlderThanDays = "" Then ToLog($errStr & "Cannot find key: moveIntoTheArchiveOlderThanDays")
 If $delaySeconds = "" Then ToLog($errStr & "Cannot find key: delaySeconds")
 If $mask = "" Then ToLog($errStr & "Cannot find key: mask")
 
@@ -85,153 +80,249 @@ If StringInStr($messageToSend, $errStr) Then
    Exit
 EndIf
 
-ToLog("source: " & $source)
+ToLog("source: " & _ArrayToString($source, " "))
 ToLog("destination: " & $destination)
-ToLog("destinationArchive: " & $destinationArchive)
-ToLog("filesLimit: " & $filesLimit)
-ToLog("moveIntoTheArchiveOlderThanDays: " & $moveIntoTheArchiveOlderThanDays)
 ToLog("delaySeconds: " & $delaySeconds)
 ToLog("mask: " & $mask)
 #EndRegion
 
 #Region ==========================    MainLoop     ==========================
 While True
-   CheckData()
-   If StringInStr($messageToSend, $errStr) Then SendEmail()
+   If UBound($source, $UBOUND_ROWS) Then
+		Local $messageToUser = ""
+
+		Local $lastCheck = IniRead($iniFile, $generalSection, "lastCheck", "")
+		If StringLen($lastCheck) <> 14 Or Not StringIsAlNum($lastCheck) Then
+			$lastCheck = @YEAR & @MON & @MDAY - 1 & @HOUR & @MIN & @SEC
+			ToLog("The last check has incorrect value and it will be set automatically")
+		EndIf
+
+		ToLog("The last check was at: " & StringLeft($lastCheck, 4) & "/" & StringMid($lastCheck, 5, 2) & _
+			"/" & StringMid($lastCheck, 7, 2) & " " & StringMid($lastCheck, 9, 2) & _
+			":" & StringMid($lastCheck, 11, 2) & ":" & StringMid($lastCheck, 13, 2))
+
+		_Crypt_Startup()
+		$destinationHashKeys = GetHashKey($destination, $mask)
+
+		For $i = 1 To UBound($source, $UBOUND_ROWS) - 1
+			$messageToUser &= CheckData($source[$i][1], $lastCheck, $source[$i][0])
+		Next
+		_Crypt_Shutdown()
+
+		If $messageToUser <> "" Then
+			$messageToUser = _Now() & @CRLF & "ВНИМАНИЕ! Добавлены новые исследования суточного мониторирования" & @CRLF & _
+				"Необходимо перезапустить программу (MARS)" & @CRLF & $messageToUser
+			Local $tempFileName = _TempFile()
+			FileWrite($tempFileName, $messageToUser)
+			Local $notepad = Run("Notepad.exe " & $tempFileName)
+			If Not $notepad Then ToLog($errStr & "Cannot launch notepad.exe")
+			Local $historyFileLink = @DesktopDir & "\" & $historyFileName & ".lnk"
+			If Not FileExists($historyFileLink) Then _
+				FileCreateShortcut($historyFilePath, $historyFileLink)
+		EndIf
+	Else
+		ToLog($errStr & "The source key doesn't contain any path")
+	EndIf
+
+	If StringInStr($messageToSend, $errStr) Then
+	   SendEmail()
+	Else
+		Local $lastCheck = @YEAR & @MON & @MDAY & @HOUR & @MIN & @SEC
+		If Not IniWrite($iniFile,$generalSection, "lastCheck", $lastCheck) Then _
+			ToLog($errStr & "Cannot update the lastCheck value in ini")
+	EndIf
+
    $messageToSend = ""
+   ToLog(@CRLF & "---Sleeping " & $delaySeconds & " second(s)")
    Sleep($delaySeconds * 1000)
 WEnd
 #EndRegion
 
 #Region ==========================    Functions     ==========================
-Func CheckData()
-   ToLog(@CRLF & "---CheckingData---")
-   ToLog("Source folder: " & $source)
-   If Not FileExists($source) Then ToLog($errStr & "Source path doesn't exists: " & $source)
-   If Not FileExists($destination) Then ToLog($errStr & "Destination path doesn't exists: " & $destination)
-   If Not FileExists($destinationArchive) Then ToLog($errStr & "Destination archive path doesn't exists: " & $destinationArchive)
-   If StringInStr($messageToSend, $errStr) Then Return
+Func CheckData($path, $lastCheck, $displayName)
+	ToLog(@CRLF & "---CheckingData---")
+	ToLog("Source folder: " & $path)
 
-   Local $sourceFiles = _FileListToArray($source, $mask, $FLTA_FILES, True)
-   If Not IsArray($sourceFiles) Then
-	  ToLog("No files " & $mask & " found in folder: " & $sourceFiles)
-	  Return
-   EndIf
+	Local $message = ""
+	If Not FileExists($path) Then ToLog($errStr & "Source path doesn't exists: " & $path)
+	If Not FileExists($destination) Then ToLog($errStr & "Destination path doesn't exists: " & $destination)
+	If StringInStr($messageToSend, $errStr) Then Return
 
-   Local $lastCheck = IniRead($iniFile, $generalSection, "lastCheck", "")
-   If StringLen($lastCheck) <> 14 Or Not StringIsAlNum($lastCheck) Then
-	  $lastCheck = @YEAR & @MON & @MDAY - 1 & @HOUR & @MIN & @SEC
-	  ToLog("The last check has incorrect value and it will be set automatically")
-   EndIf
+	Local $sourceFiles = _FileListToArray($path, $mask, $FLTA_FILES, True)
+	If Not IsArray($sourceFiles) Then
+		ToLog("Didn't found files " & $mask & " in folder")
+		Return $message
+	EndIf
 
-   ToLog("The last check was at: " & StringLeft($lastCheck, 4) & "/" & StringMid($lastCheck, 5, 2) & _
-	  "/" & StringMid($lastCheck, 7, 2) & " " & StringMid($lastCheck, 9, 2) & _
-	  ":" & StringMid($lastCheck, 11, 2) & ":" & StringMid($lastCheck, 13, 2))
+	Local $filesToCopy[0]
+	Local $copiedFileList[0][2]
+	Local $fileCounter = GetLastIndex($destination, $mask)
 
-   Local $filesToCopy[0]
-   For $i = 1 To $sourceFiles[0]
-	  Local $fileTime = FileGetTime($sourceFiles[$i], $FT_CREATED)
-	  Local $new = True
-	  If Int(_ArrayToString($fileTime, "")) < Int($lastCheck) Then $new = False
-	  If $new Then _ArrayAdd($filesToCopy, $sourceFiles[$i])
-   Next
+	For $i = 1 To $sourceFiles[0]
+		Local $currentFilePath = $sourceFiles[$i]
+		ToLog("Current file: " & $currentFilePath)
 
-   If UBound($filesToCopy) Then
-	  ToLog(UBound($filesToCopy) & " new file(s) was found")
-   Else
-	  ToLog("There is no new files")
-	  Return
-   EndIf
+		Local $fileTime = FileGetTime($currentFilePath, $FT_MODIFIED, $FT_STRING)
+		ToLog(@TAB & "Modified time: " & $fileTime)
+		If Int($fileTime) < Int($lastCheck) Then
+			ToLog(@TAB & "Skipping - too old")
+			ContinueLoop
+		EndIf
 
-   Local $fileCounter = GetLastIndex($destination, $mask)
+		Local $fileHash = _Crypt_HashFile($currentFilePath, $CALG_MD5)
+		ToLog(@TAB & "File hash: " & $fileHash)
+		If _ArraySearch($destinationHashKeys, $fileHash) > -1 Then
+			ToLog(@TAB & "Skipping - hash key already present")
+			ContinueLoop
+		EndIf
 
-   ToLog("---Copying files to the destination folder---")
-   ToLog("The destination folder: " & $destination)
-   Local $copiedFileList[0]
-   For $file in $filesToCopy
-	  Local $newFileName = StringReplace($mask, "*", $fileCounter)
-	  If Not FileCopy($file, $destination & $newFileName) Then
-		 ToLog($errStr & "Cannot write: " & $destination & $newFileName)
-	  Else
-		 ToLog(StringReplace($file, $source, "..\") & " -> " & "..\" & $newFileName)
-		 $fileCounter += 1
-		 _ArrayAdd($copiedFileList, $newFileName)
-	  EndIf
-   Next
+		_ArrayAdd($destinationHashKeys, $fileHash)
+		Local $newFileName = StringReplace($mask, "*", $fileCounter)
 
-   If UBound($copiedFileList) Then
-	  ToLog("Successfully copied " & UBound($copiedFileList) & " file(s)")
-	  Local $tempFileName = _TempFile()
-	  Local $message = _Now() & @CRLF & @CRLF & "В программу MARS добавлено новых исследований: " & UBound($copiedFileList) & _
-		 @CRLF & @CRLF & "Список добавленных файлов: " & @CRLF & _ArrayToString($copiedFileList, @CRLF)
-	  FileWrite($tempFileName, $message)
-	  Local $notepad = Run("Notepad.exe " & $tempFileName)
-	  If Not $notepad Then ToLog($errStr & "Cannot launch notepad.exe")
-	  $lastCheck = @YEAR & @MON & @MDAY & @HOUR & @MIN & @SEC
-	  If Not IniWrite($iniFile,$generalSection, "lastCheck", $lastCheck) Then ToLog($errStr & "Cannot update the lastCheck value in ini")
-   Else
-	  ToLog($errStr & "No one file has been copied")
-	  Return
-   EndIf
+		If Not FileCopy($currentFilePath, $destination & $newFileName) Then
+			ToLog($errStr & "Cannot write: " & $destination & $newFileName)
+		Else
+			ToLog(@TAB & "Copying the file: " & $currentFilePath)
+			$fileCounter += 1
 
-   If UBound($filesToCopy) > $filesLimit Then
-	  ToLog($errStr & "New files quantity exceed limits")
-	  ToLog($errStr & "Moving files to the archive will be skipped")
-	  Return
-   EndIf
+			Local $file = FileOpen($destination & $newFileName, BitOR($FO_ANSI, $FO_READ))
+;~ 			Local $file = FileOpen($currentFilePath, BitOR($FO_ANSI, $FO_READ))
+			Local $fullName = "Имя неизвестно"
+			Local $stringWithName = ""
+			Local $line = 1
 
-   ToLog("---Checking limits in the destination folder---")
-   Local $destinationFiles = _FileListToArray($destination, $mask, $FLTA_FILES, True)
-   If IsArray($destinationFiles) Then
-	  If $destinationFiles[0] > $filesLimit Then
-		 Local $needToMove = $destinationFiles[0] - $filesLimit
-		 ToLog("In the destination folder " & $needToMove & " file(s) above limit")
-		 Local $now = @YEAR & "/" & @MON & "/" & @MDAY
-		 Local $filesToArchive[0]
+			While True
+				$stringWithName = FileReadLine($file, $line)
+				If @error = 1 Or @error = -1 Then ExitLoop
+				If StringInStr($stringWithName, "PtRace") Then ExitLoop
+				If $line > 500 Then ExitLoop
+				$line += 1
+			WEnd
 
-		 For $i = 1 To UBound($destinationFiles, $UBOUND_ROWS) - 1
-			Local $fileTime = FileGetTime($destinationFiles[$i]);, $FT_CREATED)
-			$fileTime = $fileTime[0] & "/" & $fileTime[1] & "/" & $fileTime[2]
-			If _DateDiff("D", $fileTime, $now) >= $moveIntoTheArchiveOlderThanDays Then
-			   _ArrayAdd($filesToArchive, $destinationFiles[$i])
+			FileClose($file)
+
+			If StringInStr($stringWithName, "PtRace") And _
+				StringInStr($stringWithName, "PtLName") And _
+				StringInStr($stringWithName, "PtGender") And _
+				StringInStr($stringWithName, "PtFName") Then
+
+				Local $result[0]
+
+				Local $ascii = StringToASCIIArray($stringWithName)
+				For $symbol = 0 To UBound($ascii) - 1
+					If $ascii[$symbol] Then _ArrayAdd($result, $ascii[$symbol])
+				Next
+				$stringWithName = StringFromASCIIArray($result)
+;~ 				ToLog($stringWithName)
+
+				Local $n1start = StringInStr($stringWithName, "PtRace", $STR_CASESENSE) + 6
+				Local $n1count = StringInStr($stringWithName, "PtLName", $STR_CASESENSE) - $n1start
+				Local $n2start = StringInStr($stringWithName, "PtGender", $STR_CASESENSE) + 8
+				Local $n2count = StringInStr($stringWithName, "PtFName", $STR_CASESENSE) - $n2start
+
+				Local $patientName = StringMid($stringWithName, $n1start, $n1count) & " " & StringMid($stringWithName, $n2start, $n2count)
+				$patientName = StringReplace($patientName, " ", "  ")
+				$patientName = DeleteEvenSymbols($patientName)
+
+				If $patientName Then $fullName = $patientName
+
+;~ 				Local $n3Start = StringInStr($stringWithName, "RefMdFName", $STR_CASESENSE) + 10
+;~ 				Local $n3count = StringInStr($stringWithName, "RecSerNum", $STR_CASESENSE) - $n3Start
+;~ 				Local $n4Start = StringInStr($stringWithName, "PtLName", $STR_CASESENSE) + 7
+;~ 				Local $n4count = StringInStr($stringWithName, "PtId", $STR_CASESENSE) - $n4Start
+
+;~ 				Local $recSerNum = StringMid($stringWithName, $n3Start, $n3count)
+;~ 				Local $ptId = StringMid($stringWithName, $n4Start, $n4count)
+
+;~ 				ToLog("=== " & $recSerNum & " " & $ptId & " ===")
 			EndIf
-		 Next
 
-		 If Not UBound($filesToArchive) Then
-			ToLog($errStr & "There is no older files to move to the archive")
-			Return
-		 EndIf
+			ToLog(@TAB & StringReplace($currentFilePath, $path, "..\") & " -> " & "..\" & $newFileName & " | " & $fullName)
 
-		 If UBound($filesToArchive) < $needToMove Then
-			ToLog($errStr & "Files older than " & $moveIntoTheArchiveOlderThanDays & " day(s) less on " & _
-			   $needToMove - UBound($filesToArchive) & " than need to be moved to the archive: " & $needToMove)
-		 EndIf
+			Local $toAdd[1][2]
+			$toAdd[0][0] = $fullName
+			$toAdd[0][1] = $newFileName
+			_ArrayAdd($copiedFileList, $toAdd)
 
-		 ToLog("Moving old file(s) to the archive")
-		 ToLog("The destination archive folder: " & $destinationArchive)
-		 Local $movedFileList[0]
-		 Local $archiveLastIndex = GetLastIndex($destinationArchive, $mask)
-		 For $file in $filesToArchive
-			Local $newFileName = StringReplace($mask, "*", $archiveLastIndex)
-			If Not FileMove($file, $destinationArchive & "\" & $newFileName) Then
-			   ToLog($errStr & "Cannot move file to the archive: " & $file)
-			Else
-			   ToLog(StringReplace($file, $destination, "..\") & " -> " & "..\" & $newFileName)
-			   $archiveLastIndex += 1
-			   _ArrayAdd($movedFileList, $newFileName)
-			EndIf
-		 Next
+			If Not _FileWriteLog($historyFilePath, $displayName & " | " & $newFileName & " | " & _
+				$fullName & " | " & $fileTime & " | " & $fileHash, 1) Then _
+				ToLog($errStr & "Cannot write to the history file: " & $historyFilePath)
+		EndIf
 
-		 If Not UBound($movedFileList) Then
-			ToLog($errStr & "No one file has been moved")
-		 Else
-			ToLog("Successfully moved " & UBound($movedFileList) & " file(s) to the archive")
-		 EndIf
-	  EndIf
-   EndIf
+		_ArrayAdd($filesToCopy, $currentFilePath)
+	Next
+
+	If Not UBound($filesToCopy, $UBOUND_ROWS) Then
+		ToLog("There is no new files")
+		Return $message
+	EndIf
+
+	ToLog(UBound($filesToCopy) & " new file(s) was found")
+	ToLog("The destination folder: " & $destination)
+
+	If Not UBound($copiedFileList, $UBOUND_ROWS) Then
+		ToLog($errStr & "No files has been copied")
+		Return $message
+	EndIf
+
+	_ArraySort($copiedFileList)
+	$copiedFileList = NormalizeNameLength($copiedFileList)
+	ToLog("Successfully copied " & UBound($copiedFileList) & " file(s)")
+
+	Local $length = StringLen($copiedFileList[0][0] & " | " & $copiedFileList[0][1])
+	Local $line = _StringRepeat("-", $length)
+	$displayName &= _StringRepeat(" ", StringLen($copiedFileList[0][0]) - StringLen($displayName))
+	Local $message =  @CRLF & $line & @CRLF & $displayName & " | " & _
+		UBound($copiedFileList) & " шт." & @CRLF & $line & @CRLF & _
+		_ArrayToString($copiedFileList, " | ", Default, Default, @CRLF) & @CRLF & $line & @CRLF
+
+	Return $message
+EndFunc
+
+Func NormalizeNameLength($copiedFileList)
+	Local $size = UBound($copiedFileList, $UBOUND_ROWS)
+	If $size < 2 Then Return $copiedFileList
+
+	Local $maxLength = 0
+	For $i = 0 To $size - 1
+		Local $length = StringLen($copiedFileList[$i][0])
+		If $length > $maxLength Then $maxLength = $length
+	Next
+
+	For $i = 0 To $size - 1
+		Local $length = StringLen($copiedFileList[$i][0])
+		If $length < $maxLength Then $copiedFileList[$i][0] &= _StringRepeat(" ", $maxLength - $length)
+	Next
+
+	Return $copiedFileList
+EndFunc
+
+Func DeleteEvenSymbols($str)
+	Local $tmp = ""
+	For $i = 1 To StringLen($str)
+		$tmp &= StringMid($str, $i, 1)
+		$i += 1
+	Next
+	Return $tmp
+EndFunc
+
+Func GetHashKey($path, $searchMask)
+	ToLog("---Calculating hash keys for files in: " & $path & "---")
+	Local $result[0]
+	Local $files = _FileListToArray($path, $searchMask, $FLTA_FILES, True)
+	If Not IsArray($files) Or UBound($files) = 0 Then Return $result
+
+	For $i = 1 To UBound($files) - 1
+		Local $currentHash = _Crypt_HashFile($files[$i], $CALG_MD5)
+		_ArrayAdd($result, $currentHash)
+		ToLog($files[$i] & " | " & $currentHash)
+	Next
+
+	Return $result
 EndFunc
 
 Func GetLastIndex($path, $searchMask)
+	ToLog("---Searching last index in: " & $path & "---")
    Local $files = _FileListToArray($path, $searchMask, $FLTA_FILES, True)
    If Not IsArray($files) Or UBound($files) = 0 Then Return 0
 
@@ -253,26 +344,21 @@ Func ToLog($message)
    $message &= @CRLF
    $messageToSend &= $message
    ConsoleWrite($message)
-   _FileWriteLog($logFile, $message)
+   _FileWriteLog($logFilePath, $message)
 EndFunc
 
 Func SendEmail()
-   If Not $send_email Then
-	  FileClose($logFile)
-	  Return
-   EndIf
+   If Not $send_email Then Return
 
    ToLog(@CRLF & "---Sending email---")
    If _INetSmtpMailCom($server, "Copy MARS data", $login, $to, _
 		 $current_pc_name & ": error(s) occurred", _
-		 $messageToSend, "", "", "", $login, $password) <> 0 Then
+		 $messageToSend, $logFilePath, "", "", $login, $password) <> 0 Then
 
 	  _INetSmtpMailCom($server_backup, "Copy MARS data", $login_backup, $to_backup, _
 		 $current_pc_name & ": error(s) occurred", _
-		 $messageToSend, "", "", "", $login_backup, $password_backup)
+		 $messageToSend, $logFilePath, "", "", $login_backup, $password_backup)
    EndIf
-
-   FileClose($logFile)
 EndFunc
 
 Func _INetSmtpMailCom($s_SmtpServer, $s_FromName, $s_FromAddress, $s_ToAddress, _
@@ -299,7 +385,7 @@ Func _INetSmtpMailCom($s_SmtpServer, $s_FromName, $s_FromAddress, $s_ToAddress, 
 
    If $s_AttachFiles <> "" Then
 	  Local $S_Files2Attach = StringSplit($s_AttachFiles, ";")
-	  For $x = 1 To $S_Files2Attach[0] - 1
+	  For $x = 1 To $S_Files2Attach[0]
 		 $S_Files2Attach[$x] = _PathFull ($S_Files2Attach[$x])
 		 If FileExists($S_Files2Attach[$x]) Then
 			$objEmail.AddAttachment ($S_Files2Attach[$x])
