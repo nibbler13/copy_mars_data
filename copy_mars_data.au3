@@ -2,11 +2,11 @@
 #AutoIt3Wrapper_Icon=icon.ico
 #EndRegion ;**** Directives created by AutoIt3Wrapper_GUI ****
 
-#pragma compile(ProductVersion, 0.8)
+#pragma compile(ProductVersion, 0.81)
 #pragma compile(UPX, true)
 #pragma compile(CompanyName, 'ООО Клиника ЛМС')
 #pragma compile(FileDescription, Скрипт для копирования файлов Mars с суточными экг мониторами)
-#pragma compile(LegalCopyright, Грашкин Павел Павлович - Нижний Новгород - 31-555 -)
+#pragma compile(LegalCopyright, Грашкин Павел Павлович - Нижний Новгород - 31-555)
 #pragma compile(ProductName, copy_mars_data)
 
 AutoItSetOption("TrayAutoPause", 0)
@@ -36,11 +36,11 @@ Local $generalSection = "general"
 Local $sourcesSection = "sources"
 Local $mailSection = "mail"
 
-Local $server_backup =
-Local $login_backup =
-Local $password_backup =
-Local $to_backup =
-Local $send_email_backup = "1"
+Local $server_backup = 
+Local $login_backup = 
+Local $password_backup = 
+Local $to_backup = 
+Local $send_email_backup = 
 
 Local $server = IniRead($iniFile, $mailSection, "server", $server_backup)
 Local $login = IniRead($iniFile, $mailSection, "login", $login_backup)
@@ -255,7 +255,6 @@ Func CheckData($path, $lastCheck, $displayName)
 			ContinueLoop
 		EndIf
 
-
 		_ArrayAdd($destinationFilesKeys, $fileKeys)
 		Local $newFileName = StringReplace($mask, "*", $fileCounter)
 
@@ -309,59 +308,59 @@ EndFunc
 
 
 Func GetNameAndIds($fileName)
-	Local $nameAndIds[3]
+	Local $nameAndIds = ["Имя неизвестно", "", ""]
 	Local $file = FileOpen($fileName, BitOR($FO_ANSI, $FO_READ))
-	Local $fullName = "Имя неизвестно"
-	Local $recSerNum = ""
-	Local $ptId = ""
-	Local $stringWithName = ""
-	Local $line = 1
+	Local $stringToParse = ""
 
-	While True
-		$stringWithName = FileReadLine($file, $line)
-		If @error = 1 Or @error = -1 Then ExitLoop
-		If StringInStr($stringWithName, "PtRace") Then ExitLoop
-		If $line > 500 Then ExitLoop
-		$line += 1
-	WEnd
-
-	FileClose($file)
-
-	If StringInStr($stringWithName, "PtRace") And _
-		StringInStr($stringWithName, "PtLName") And _
-		StringInStr($stringWithName, "PtGender") And _
-		StringInStr($stringWithName, "PtFName") Then
-
-		Local $result[0]
-		Local $ascii = StringToASCIIArray($stringWithName)
-		For $symbol = 0 To UBound($ascii) - 1
-			If $ascii[$symbol] Then _ArrayAdd($result, $ascii[$symbol])
-		Next
-		$stringWithName = StringFromASCIIArray($result)
-
-		Local $n1start = StringInStr($stringWithName, "PtRace", $STR_CASESENSE) + 6
-		Local $n1count = StringInStr($stringWithName, "PtLName", $STR_CASESENSE) - $n1start
-		Local $n2start = StringInStr($stringWithName, "PtGender", $STR_CASESENSE) + 8
-		Local $n2count = StringInStr($stringWithName, "PtFName", $STR_CASESENSE) - $n2start
-
-		Local $patientName = StringMid($stringWithName, $n1start, $n1count) & " " & StringMid($stringWithName, $n2start, $n2count)
-		$patientName = StringReplace($patientName, " ", "  ")
-		$patientName = DeleteEvenSymbols($patientName)
-
-		If $patientName Then $fullName = $patientName
-
-		Local $n3Start = StringInStr($stringWithName, "RefMdFName", $STR_CASESENSE) + 10
-		Local $n3count = StringInStr($stringWithName, "RecSerNum", $STR_CASESENSE) - $n3Start
-		Local $n4Start = StringInStr($stringWithName, "PtLName", $STR_CASESENSE) + 7
-		Local $n4count = StringInStr($stringWithName, "PtId", $STR_CASESENSE) - $n4Start
-
-		$recSerNum = StringMid($stringWithName, $n3Start, $n3count)
-		$ptId = StringMid($stringWithName, $n4Start, $n4count)
+	Local $fileContent = FileReadToArray($file)
+	If @error Then
+		Local $text = ""
+		If @error = 1 Then $text = "Error opening specified file"
+		If @error = 2 Then $text = "Empty file"
+		ToLog($errStr & $text)
+		Return $nameAndIds
 	EndIf
 
-	$nameAndIds[0] = $fullName
-	$nameAndIds[1] = $recSerNum
-	$nameAndIds[2] = $ptId
+	Local $searchResult = _ArraySearch($fileContent, "RefMdFName", -1, -1, 1, 3)
+	If @error Then
+		ToLog("Cannot find string 'RefMdFName' at file: " & $fileName)
+		Return $nameAndIds
+	EndIf
+
+	$stringToParse = $fileContent[$searchResult]
+	For $i = $searchResult + 1 To UBound($fileContent) - 1
+		If StringInStr($stringToParse, "PtFName") Then ExitLoop
+		$stringToParse &= $fileContent[$i]
+	Next
+
+	$resultString = ""
+	For $i = 0 To StringLen($stringToParse)
+		Local $tempSymbol = StringMid($stringToParse, $i, 1)
+		If $tempSymbol = " " Or StringIsAlNum($tempSymbol) Then $resultString &= $tempSymbol
+	Next
+	$stringToParse = $resultString
+
+	Local $family = ""
+	Local $n1start = StringInStr($stringToParse, "PtRace", $STR_CASESENSE) + 6
+	Local $n1count = StringInStr($stringToParse, "PtLName", $STR_CASESENSE) - $n1start
+	If $n1start And $n1count Then $family = DeleteEvenSymbols(StringMid($stringToParse, $n1start, $n1count))
+
+	Local $name = ""
+	Local $n2start = StringInStr($stringToParse, "PtGender", $STR_CASESENSE) + 8
+	Local $n2count = StringInStr($stringToParse, "PtFName", $STR_CASESENSE) - $n2start
+	If $n2start And $n2count Then $name = DeleteEvenSymbols(StringMid($stringToParse, $n2start, $n2count))
+
+	Local $patientName = ""
+	If $family Or $name Then $nameAndIds[0] = $family & " " & $name
+
+	Local $n3Start = StringInStr($stringToParse, "RefMdFName", $STR_CASESENSE) + 10
+	Local $n3count = StringInStr($stringToParse, "RecSerNum", $STR_CASESENSE) - $n3Start
+	If $n3Start And $n3count Then $nameAndIds[1] = LeaveOnlyDigits(StringMid($stringToParse, $n3Start, $n3count))
+
+	Local $n4Start = StringInStr($stringToParse, "PtLName", $STR_CASESENSE) + 7
+	Local $n4count = StringInStr($stringToParse, "PtId", $STR_CASESENSE) - $n4Start
+	If $n4Start And $n4count Then $nameAndIds[2] = LeaveOnlyDigits(StringMid($stringToParse, $n4Start, $n4count))
+
 	Return $nameAndIds
 EndFunc
 
@@ -386,12 +385,25 @@ EndFunc
 
 
 Func DeleteEvenSymbols($str)
-	Local $tmp = ""
+	Local $toReturn = ""
 	For $i = 1 To StringLen($str)
-		$tmp &= StringMid($str, $i, 1)
-		$i += 1
+		Local $current = StringMid($str, $i, 1)
+		Local $next = StringMid($str, $i + 1, 1)
+		If $next = "я" Then $i += 1
+		If StringIsUpper($current) And (StringIsUpper($next) Or StringIsDigit($next)) Then ExitLoop
+		$toReturn &= $current
 	Next
-	Return $tmp
+	Return StringStripWS($toReturn, $STR_STRIPLEADING + $STR_STRIPTRAILING + $STR_STRIPSPACES)
+EndFunc
+
+
+Func LeaveOnlyDigits($str)
+	Local $toReturn = ""
+	For $i = 1 To StringLen($str)
+		Local $current = StringMid($str, $i, 1)
+		If StringIsDigit($current) Then $toReturn &= $current
+	Next
+	Return StringStripWS($toReturn, $STR_STRIPLEADING + $STR_STRIPTRAILING + $STR_STRIPSPACES)
 EndFunc
 
 
