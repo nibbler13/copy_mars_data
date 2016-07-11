@@ -2,11 +2,11 @@
 #AutoIt3Wrapper_Icon=icon.ico
 #EndRegion ;**** Directives created by AutoIt3Wrapper_GUI ****
 
-#pragma compile(ProductVersion, 0.71)
+#pragma compile(ProductVersion, 0.8)
 #pragma compile(UPX, true)
 #pragma compile(CompanyName, 'ООО Клиника ЛМС')
 #pragma compile(FileDescription, Скрипт для копирования файлов Mars с суточными экг мониторами)
-#pragma compile(LegalCopyright, Грашкин Павел Павлович - Нижний Новгород - 31-555)
+#pragma compile(LegalCopyright, Грашкин Павел Павлович - Нижний Новгород - 31-555 -)
 #pragma compile(ProductName, copy_mars_data)
 
 AutoItSetOption("TrayAutoPause", 0)
@@ -36,10 +36,10 @@ Local $generalSection = "general"
 Local $sourcesSection = "sources"
 Local $mailSection = "mail"
 
-Local $server_backup = ""
-Local $login_backup = ""
-Local $password_backup = ""
-Local $to_backup = ""
+Local $server_backup =
+Local $login_backup =
+Local $password_backup =
+Local $to_backup =
 Local $send_email_backup = "1"
 
 Local $server = IniRead($iniFile, $mailSection, "server", $server_backup)
@@ -62,16 +62,25 @@ ToLog("send_mail: " & $send_email)
 
 Local $source = IniReadSection($iniFile, $sourcesSection)
 Local $destination = IniRead($iniFile, $generalSection, "destination", "")
+Local $destinationArchive = IniRead($iniFile, $generalSection, "destinationArchive", "")
+Local $moveToArchiveIfOlderThanDays = IniRead($iniFile, $generalSection, "moveToArchiveIfOlderThanDays", "")
+Local $workingTime = IniRead($iniFile, $generalSection, "workingTime", "")
+Local $notificateIfErrorCounterMoreThan = IniRead($iniFile, $generalSection, "notificateIfErrorCounterMoreThan", "")
 Local $delaySeconds = IniRead($iniFile, $generalSection, "delaySeconds", "")
 Local $mask = IniRead($iniFile, $generalSection, "mask", "")
 
-Local $destinationHashKeys
+Local $destinationFilesKeys
+Local $errorCounter = 0
 #EndRegion
 
 #Region ==========================    Check for the settings error    ==========================
 ToLog(@CRLF & "---Check for settings errors---")
 If Not IsArray($source) Then ToLog($errStr & "Cannot find section: sources")
 If $destination = "" Then ToLog($errStr & "Cannot find key: destination")
+If $destinationArchive = "" Then ToLog($errStr & "Cannot find key: destinationArchive")
+If $moveToArchiveIfOlderThanDays = "" Then ToLog($errStr & "Cannot find key: moveToArchiveIfOlderThanDays")
+If $workingTime = "" Then ToLog($errStr & "Cannot find key: workingTime")
+If $notificateIfErrorCounterMoreThan = "" Then ToLog($errStr & "Cannot find key: notificateIfErrorCounterMoreThan")
 If $delaySeconds = "" Then ToLog($errStr & "Cannot find key: delaySeconds")
 If $mask = "" Then ToLog($errStr & "Cannot find key: mask")
 
@@ -82,13 +91,19 @@ EndIf
 
 ToLog("source: " & _ArrayToString($source, " "))
 ToLog("destination: " & $destination)
+ToLog("destinationArchive: " & $destinationArchive)
+ToLog("moveToArchiveIfOlderThanDays: " & $moveToArchiveIfOlderThanDays)
+ToLog("workingTime: " & $workingTime)
+ToLog("notificateIfErrorCounterMoreThan: " & $notificateIfErrorCounterMoreThan)
 ToLog("delaySeconds: " & $delaySeconds)
 ToLog("mask: " & $mask)
 #EndRegion
 
 #Region ==========================    MainLoop     ==========================
 While True
-   If UBound($source, $UBOUND_ROWS) Then
+	If UBound($source, $UBOUND_ROWS) Then
+		MoveOldFilesToArchive($destination, $destinationArchive, $mask, $moveToArchiveIfOlderThanDays)
+
 		Local $messageToUser = ""
 
 		Local $lastCheck = IniRead($iniFile, $generalSection, "lastCheck", "")
@@ -101,31 +116,45 @@ While True
 			"/" & StringMid($lastCheck, 7, 2) & " " & StringMid($lastCheck, 9, 2) & _
 			":" & StringMid($lastCheck, 11, 2) & ":" & StringMid($lastCheck, 13, 2))
 
-		_Crypt_Startup()
-		$destinationHashKeys = GetHashKey($destination, $mask)
+		$destinationFilesKeys = GetKeys($destination, $mask)
 
 		For $i = 1 To UBound($source, $UBOUND_ROWS) - 1
 			$messageToUser &= CheckData($source[$i][1], $lastCheck, $source[$i][0])
 		Next
-		_Crypt_Shutdown()
 
 		If $messageToUser <> "" Then
 			$messageToUser = _Now() & @CRLF & "ВНИМАНИЕ! Добавлены новые исследования суточного мониторирования" & @CRLF & _
 				"Необходимо перезапустить программу (MARS)" & @CRLF & $messageToUser
 			Local $tempFileName = _TempFile()
 			FileWrite($tempFileName, $messageToUser)
+
 			Local $notepad = Run("Notepad.exe " & $tempFileName)
 			If Not $notepad Then ToLog($errStr & "Cannot launch notepad.exe")
+
 			Local $historyFileLink = @DesktopDir & "\" & $historyFileName & ".lnk"
-			If Not FileExists($historyFileLink) Then _
-				FileCreateShortcut($historyFilePath, $historyFileLink)
+			If Not FileExists($historyFileLink) Then FileCreateShortcut($historyFilePath, $historyFileLink)
 		EndIf
 	Else
 		ToLog($errStr & "The source key doesn't contain any path")
 	EndIf
 
 	If StringInStr($messageToSend, $errStr) Then
-	   SendEmail()
+		$errorCounter += 1
+
+		Local $startTime = 8
+		Local $endTime = 21
+		If StringInStr($workingTime, "-") Then
+			Local $tmp = StringSplit($workingTime, "-", $STR_NOCOUNT)
+			$startTime = $tmp[0]
+			$endTime = $tmp[1]
+		EndIf
+
+		Local $now = Int(@Hour)
+
+		If $now >= $startTime And $now < $endTime And $errorCounter >= $notificateIfErrorCounterMoreThan Then
+			SendEmail()
+			$errorCounter = 0
+		EndIf
 	Else
 		Local $lastCheck = @YEAR & @MON & @MDAY & @HOUR & @MIN & @SEC
 		If Not IniWrite($iniFile,$generalSection, "lastCheck", $lastCheck) Then _
@@ -138,15 +167,64 @@ While True
 WEnd
 #EndRegion
 
-#Region ==========================    Functions     ==========================
+Func MoveOldFilesToArchive($path, $archive, $maskToSearch, $maxAge)
+	ToLog("---MoveOldFilesToArchive---")
+	ToLog("From: " & $path)
+	ToLog("To: " & $archive)
+	ToLog("Max available age: " & $maxAge)
+
+	Local $sourceFiles = _FileListToArray($path, $maskToSearch, $FLTA_FILES, True)
+	If Not IsArray($sourceFiles) Then
+		ToLog("Didn't found files " & $maskToSearch & " in folder")
+		Return
+	EndIf
+
+	Local $nowTime = _NowCalcDate()
+
+	For $i = 1 To $sourceFiles[0]
+		Local $currentFilePath = $sourceFiles[$i]
+
+		Local $fileTime = FileGetTime($currentFilePath, $FT_MODIFIED, $FT_ARRAY)
+		If @error Then
+			ToLog("Cannot get modified time for: " & $currentFilePath)
+			ContinueLoop
+		EndIf
+
+		Local $fileDate = $fileTime[0] & "/" & $fileTime[1] & "/" & $fileTime[2]
+		Local $age = _DateDiff("D", $fileDate, $nowTime)
+		If $age > $maxAge Then
+			ToLog("Trying to move: " & $currentFilePath & " age: " & $age)
+			Local $fileKeys = GetNameAndIds($currentFilePath)
+			Local $newName = $archive & $fileKeys[0] & " " & $fileKeys[2] & " modified - " & _
+				$fileTime[0] & "." & $fileTime[1] & "." & $fileTime[2] & "_" & _
+				$fileTime[3] & "." & $fileTime[4] & "." & $fileTime[5] & ".nat"
+
+			If FileExists($newName) Then $newName &= " " & @SEC
+			If Not FileMove($currentFilePath, $newName) Then
+				ToLog($errStr & "Cannot move file to archive" & $newName)
+			Else
+				ToLog("Successfully moved to: " & $newName)
+			EndIf
+		EndIf
+	Next
+EndFunc
+
+
 Func CheckData($path, $lastCheck, $displayName)
 	ToLog(@CRLF & "---CheckingData---")
 	ToLog("Source folder: " & $path)
 
 	Local $message = ""
-	If Not FileExists($path) Then ToLog($errStr & "Source path doesn't exists: " & $path)
-	If Not FileExists($destination) Then ToLog($errStr & "Destination path doesn't exists: " & $destination)
-	If StringInStr($messageToSend, $errStr) Then Return
+
+	If Not FileExists($path) Then
+		ToLog($errStr & "Source path doesn't exists: " & $path)
+		Return $message
+	EndIf
+
+	If Not FileExists($destination) Then
+		ToLog($errStr & "Destination path doesn't exists: " & $destination)
+		Return $message
+	EndIf
 
 	Local $sourceFiles = _FileListToArray($path, $mask, $FLTA_FILES, True)
 	If Not IsArray($sourceFiles) Then
@@ -169,14 +247,16 @@ Func CheckData($path, $lastCheck, $displayName)
 			ContinueLoop
 		EndIf
 
-		Local $fileHash = _Crypt_HashFile($currentFilePath, $CALG_MD5)
-		ToLog(@TAB & "File hash: " & $fileHash)
-		If _ArraySearch($destinationHashKeys, $fileHash) > -1 Then
-			ToLog(@TAB & "Skipping - hash key already present")
+		Local $fileKeys = GetNameAndIds($currentFilePath)
+		ToLog(@TAB & "File keys: " & _ArrayToString($fileKeys))
+
+		If _ArraySearch($destinationFilesKeys, _ArrayToString($fileKeys)) > -1 Then
+			ToLog(@TAB & "Skipping - file keys already present")
 			ContinueLoop
 		EndIf
 
-		_ArrayAdd($destinationHashKeys, $fileHash)
+
+		_ArrayAdd($destinationFilesKeys, $fileKeys)
 		Local $newFileName = StringReplace($mask, "*", $fileCounter)
 
 		If Not FileCopy($currentFilePath, $destination & $newFileName) Then
@@ -185,58 +265,7 @@ Func CheckData($path, $lastCheck, $displayName)
 			ToLog(@TAB & "Copying the file: " & $currentFilePath)
 			$fileCounter += 1
 
-			Local $file = FileOpen($destination & $newFileName, BitOR($FO_ANSI, $FO_READ))
-;~ 			Local $file = FileOpen($currentFilePath, BitOR($FO_ANSI, $FO_READ))
-			Local $fullName = "Имя неизвестно"
-			Local $stringWithName = ""
-			Local $line = 1
-
-			While True
-				$stringWithName = FileReadLine($file, $line)
-				If @error = 1 Or @error = -1 Then ExitLoop
-				If StringInStr($stringWithName, "PtRace") Then ExitLoop
-				If $line > 500 Then ExitLoop
-				$line += 1
-			WEnd
-
-			FileClose($file)
-
-			If StringInStr($stringWithName, "PtRace") And _
-				StringInStr($stringWithName, "PtLName") And _
-				StringInStr($stringWithName, "PtGender") And _
-				StringInStr($stringWithName, "PtFName") Then
-
-				Local $result[0]
-
-				Local $ascii = StringToASCIIArray($stringWithName)
-				For $symbol = 0 To UBound($ascii) - 1
-					If $ascii[$symbol] Then _ArrayAdd($result, $ascii[$symbol])
-				Next
-				$stringWithName = StringFromASCIIArray($result)
-;~ 				ToLog($stringWithName)
-
-				Local $n1start = StringInStr($stringWithName, "PtRace", $STR_CASESENSE) + 6
-				Local $n1count = StringInStr($stringWithName, "PtLName", $STR_CASESENSE) - $n1start
-				Local $n2start = StringInStr($stringWithName, "PtGender", $STR_CASESENSE) + 8
-				Local $n2count = StringInStr($stringWithName, "PtFName", $STR_CASESENSE) - $n2start
-
-				Local $patientName = StringMid($stringWithName, $n1start, $n1count) & " " & StringMid($stringWithName, $n2start, $n2count)
-				$patientName = StringReplace($patientName, " ", "  ")
-				$patientName = DeleteEvenSymbols($patientName)
-
-				If $patientName Then $fullName = $patientName
-
-;~ 				Local $n3Start = StringInStr($stringWithName, "RefMdFName", $STR_CASESENSE) + 10
-;~ 				Local $n3count = StringInStr($stringWithName, "RecSerNum", $STR_CASESENSE) - $n3Start
-;~ 				Local $n4Start = StringInStr($stringWithName, "PtLName", $STR_CASESENSE) + 7
-;~ 				Local $n4count = StringInStr($stringWithName, "PtId", $STR_CASESENSE) - $n4Start
-
-;~ 				Local $recSerNum = StringMid($stringWithName, $n3Start, $n3count)
-;~ 				Local $ptId = StringMid($stringWithName, $n4Start, $n4count)
-
-;~ 				ToLog("=== " & $recSerNum & " " & $ptId & " ===")
-			EndIf
-
+			Local $fullName = $fileKeys[0]
 			ToLog(@TAB & StringReplace($currentFilePath, $path, "..\") & " -> " & "..\" & $newFileName & " | " & $fullName)
 
 			Local $toAdd[1][2]
@@ -244,8 +273,7 @@ Func CheckData($path, $lastCheck, $displayName)
 			$toAdd[0][1] = $newFileName
 			_ArrayAdd($copiedFileList, $toAdd)
 
-			If Not _FileWriteLog($historyFilePath, $displayName & " | " & $newFileName & " | " & _
-				$fullName & " | " & $fileTime & " | " & $fileHash, 1) Then _
+			If Not _FileWriteLog($historyFilePath, $displayName & @TAB & " | " & @TAB & $newFileName & @TAB & " | " & $fullName, 1) Then _
 				ToLog($errStr & "Cannot write to the history file: " & $historyFilePath)
 		EndIf
 
@@ -279,6 +307,65 @@ Func CheckData($path, $lastCheck, $displayName)
 	Return $message
 EndFunc
 
+
+Func GetNameAndIds($fileName)
+	Local $nameAndIds[3]
+	Local $file = FileOpen($fileName, BitOR($FO_ANSI, $FO_READ))
+	Local $fullName = "Имя неизвестно"
+	Local $recSerNum = ""
+	Local $ptId = ""
+	Local $stringWithName = ""
+	Local $line = 1
+
+	While True
+		$stringWithName = FileReadLine($file, $line)
+		If @error = 1 Or @error = -1 Then ExitLoop
+		If StringInStr($stringWithName, "PtRace") Then ExitLoop
+		If $line > 500 Then ExitLoop
+		$line += 1
+	WEnd
+
+	FileClose($file)
+
+	If StringInStr($stringWithName, "PtRace") And _
+		StringInStr($stringWithName, "PtLName") And _
+		StringInStr($stringWithName, "PtGender") And _
+		StringInStr($stringWithName, "PtFName") Then
+
+		Local $result[0]
+		Local $ascii = StringToASCIIArray($stringWithName)
+		For $symbol = 0 To UBound($ascii) - 1
+			If $ascii[$symbol] Then _ArrayAdd($result, $ascii[$symbol])
+		Next
+		$stringWithName = StringFromASCIIArray($result)
+
+		Local $n1start = StringInStr($stringWithName, "PtRace", $STR_CASESENSE) + 6
+		Local $n1count = StringInStr($stringWithName, "PtLName", $STR_CASESENSE) - $n1start
+		Local $n2start = StringInStr($stringWithName, "PtGender", $STR_CASESENSE) + 8
+		Local $n2count = StringInStr($stringWithName, "PtFName", $STR_CASESENSE) - $n2start
+
+		Local $patientName = StringMid($stringWithName, $n1start, $n1count) & " " & StringMid($stringWithName, $n2start, $n2count)
+		$patientName = StringReplace($patientName, " ", "  ")
+		$patientName = DeleteEvenSymbols($patientName)
+
+		If $patientName Then $fullName = $patientName
+
+		Local $n3Start = StringInStr($stringWithName, "RefMdFName", $STR_CASESENSE) + 10
+		Local $n3count = StringInStr($stringWithName, "RecSerNum", $STR_CASESENSE) - $n3Start
+		Local $n4Start = StringInStr($stringWithName, "PtLName", $STR_CASESENSE) + 7
+		Local $n4count = StringInStr($stringWithName, "PtId", $STR_CASESENSE) - $n4Start
+
+		$recSerNum = StringMid($stringWithName, $n3Start, $n3count)
+		$ptId = StringMid($stringWithName, $n4Start, $n4count)
+	EndIf
+
+	$nameAndIds[0] = $fullName
+	$nameAndIds[1] = $recSerNum
+	$nameAndIds[2] = $ptId
+	Return $nameAndIds
+EndFunc
+
+
 Func NormalizeNameLength($copiedFileList)
 	Local $size = UBound($copiedFileList, $UBOUND_ROWS)
 	If $size < 2 Then Return $copiedFileList
@@ -297,6 +384,7 @@ Func NormalizeNameLength($copiedFileList)
 	Return $copiedFileList
 EndFunc
 
+
 Func DeleteEvenSymbols($str)
 	Local $tmp = ""
 	For $i = 1 To StringLen($str)
@@ -306,20 +394,23 @@ Func DeleteEvenSymbols($str)
 	Return $tmp
 EndFunc
 
-Func GetHashKey($path, $searchMask)
-	ToLog("---Calculating hash keys for files in: " & $path & "---")
+
+Func GetKeys($path, $searchMask)
+	ToLog("---Calculating files keys for files in: " & $path & "---")
 	Local $result[0]
 	Local $files = _FileListToArray($path, $searchMask, $FLTA_FILES, True)
+
 	If Not IsArray($files) Or UBound($files) = 0 Then Return $result
 
 	For $i = 1 To UBound($files) - 1
-		Local $currentHash = _Crypt_HashFile($files[$i], $CALG_MD5)
-		_ArrayAdd($result, $currentHash)
-		ToLog($files[$i] & " | " & $currentHash)
+		Local $currentKeys = GetNameAndIds($files[$i])
+		_ArrayAdd($result, _ArrayToString($currentKeys), Default, "~")
+		ToLog($files[$i] & "|" & _ArrayToString($currentKeys))
 	Next
 
 	Return $result
 EndFunc
+
 
 Func GetLastIndex($path, $searchMask)
 	ToLog("---Searching last index in: " & $path & "---")
@@ -340,12 +431,14 @@ Func GetLastIndex($path, $searchMask)
    Return _ArrayMax($files, 0, 1, Default, 1) + 1
 EndFunc
 
-Func ToLog($message)
+
+Func ToLog($message, $toMail = True)
    $message &= @CRLF
-   $messageToSend &= $message
+   If $toMail Then $messageToSend &= $message
    ConsoleWrite($message)
    _FileWriteLog($logFilePath, $message)
 EndFunc
+
 
 Func SendEmail()
    If Not $send_email Then Return
@@ -360,6 +453,7 @@ Func SendEmail()
 		 $messageToSend, $logFilePath, "", "", $login_backup, $password_backup)
    EndIf
 EndFunc
+
 
 Func _INetSmtpMailCom($s_SmtpServer, $s_FromName, $s_FromAddress, $s_ToAddress, _
    $s_Subject = "", $as_Body = "", $s_AttachFiles = "", $s_CcAddress = "", _
@@ -421,6 +515,7 @@ Func _INetSmtpMailCom($s_SmtpServer, $s_FromName, $s_FromAddress, $s_ToAddress, 
    Return @error
 EndFunc
 
+
 Func HandleComError()
    ToLog($errStr & @ScriptName & " (" & $oMyError.scriptline & ") : ==> COM Error intercepted!" & @CRLF & _
             @TAB & "err.number is: " & @TAB & @TAB & "0x" & Hex($oMyError.number) & @CRLF & _
@@ -433,4 +528,3 @@ Func HandleComError()
             @TAB & "err.scriptline is: " & @TAB & $oMyError.scriptline & @CRLF & _
             @TAB & "err.retcode is: " & @TAB & "0x" & Hex($oMyError.retcode) & @CRLF & @CRLF)
 Endfunc
-#EndRegion
